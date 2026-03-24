@@ -22,6 +22,7 @@
 """
 A set of utilities for computing and analyzing quantal response equilbria
 """
+
 from __future__ import annotations
 
 import math
@@ -32,11 +33,11 @@ import pygambit.gambit as libgbt
 
 
 def logit_solve_branch(
-        game: libgbt.Game,
-        use_strategic: bool = False,
-        maxregret: float = 1.0e-8,
-        first_step: float = .03,
-        max_accel: float = 1.1,
+    game: libgbt.Game,
+    use_strategic: bool = False,
+    maxregret: float = 1.0e-8,
+    first_step: float = 0.03,
+    max_accel: float = 1.1,
 ):
     if maxregret <= 0.0:
         raise ValueError("logit_solve_branch(): maxregret argument must be positive")
@@ -51,11 +52,11 @@ def logit_solve_branch(
 
 
 def logit_solve_lambda(
-        game: libgbt.Game,
-        lam: float | list[float],
-        use_strategic: bool = False,
-        first_step: float = .03,
-        max_accel: float = 1.1,
+    game: libgbt.Game,
+    lam: float | list[float],
+    use_strategic: bool = False,
+    first_step: float = 0.03,
+    max_accel: float = 1.1,
 ):
     if first_step <= 0.0:
         raise ValueError("logit_solve_lambda(): first_step argument must be positive")
@@ -75,12 +76,14 @@ class LogitQREMixedStrategyFitResult:
     --------
     logit_estimate
     """
-    def __init__(self, data, method, lam, profile, log_like):
+
+    def __init__(self, data, method, lam, profile, log_like, se: float | None = None):
         self._data = data
         self._method = method
         self._lam = lam
         self._profile = profile
         self._log_like = log_like
+        self._se = se
 
     @property
     def method(self) -> str:
@@ -107,6 +110,22 @@ class LogitQREMixedStrategyFitResult:
         """The log-likelihood of the data at the estimated QRE."""
         return self._log_like
 
+    @property
+    def se(self) -> float | None:
+        """Estimated standard error for `lam`, if available."""
+        return self._se
+
+    @property
+    def aic(self) -> float:
+        """Akaike information criterion at the fitted point."""
+        return _fit_aic(self.log_like, n_parameters=1)
+
+    @property
+    def bic(self) -> float:
+        """Bayesian information criterion at the fitted point."""
+        n_observations = _sample_size_strategy(self.data)
+        return _fit_bic(self.log_like, n_observations=n_observations, n_parameters=1)
+
     def __repr__(self) -> str:
         return (
             f"<LogitQREMixedStrategyFitResult(method={self.method},"
@@ -122,12 +141,14 @@ class LogitQREMixedBehaviorFitResult:
     --------
     logit_estimate
     """
-    def __init__(self, data, method, lam, profile, log_like):
+
+    def __init__(self, data, method, lam, profile, log_like, se: float | None = None):
         self._data = data
         self._method = method
         self._lam = lam
         self._profile = profile
         self._log_like = log_like
+        self._se = se
 
     @property
     def method(self) -> str:
@@ -154,6 +175,22 @@ class LogitQREMixedBehaviorFitResult:
         """The log-likelihood of the data at the estimated QRE."""
         return self._log_like
 
+    @property
+    def se(self) -> float | None:
+        """Estimated standard error for `lam`, if available."""
+        return self._se
+
+    @property
+    def aic(self) -> float:
+        """Akaike information criterion at the fitted point."""
+        return _fit_aic(self.log_like, n_parameters=1)
+
+    @property
+    def bic(self) -> float:
+        """Bayesian information criterion at the fitted point."""
+        n_observations = _sample_size_behavior(self.data)
+        return _fit_bic(self.log_like, n_observations=n_observations, n_parameters=1)
+
     def __repr__(self) -> str:
         return (
             f"<LogitQREMixedBehaviorFitResult(method={self.method},"
@@ -162,99 +199,142 @@ class LogitQREMixedBehaviorFitResult:
 
 
 def _estimate_strategy_fixedpoint(
-        data: libgbt.MixedStrategyProfileDouble,
-        local_max: bool = False,
-        first_step: float = .03,
-        max_accel: float = 1.1,
+    data: libgbt.MixedStrategyProfileDouble,
+    local_max: bool = False,
+    first_step: float = 0.03,
+    max_accel: float = 1.1,
 ) -> LogitQREMixedStrategyFitResult:
-    res = libgbt._logit_strategy_estimate(data, local_max=local_max,
-                                          first_step=first_step, max_accel=max_accel)
-    return LogitQREMixedStrategyFitResult(
-        data, "fixedpoint", res.lam, res.profile, res.log_like
+    res = libgbt._logit_strategy_estimate(
+        data, local_max=local_max, first_step=first_step, max_accel=max_accel
     )
+    return LogitQREMixedStrategyFitResult(data, "fixedpoint", res.lam, res.profile, res.log_like)
 
 
 def _estimate_behavior_fixedpoint(
-        data: libgbt.MixedBehaviorProfileDouble,
-        local_max: bool = False,
-        first_step: float = .03,
-        max_accel: float = 1.1,
+    data: libgbt.MixedBehaviorProfileDouble,
+    local_max: bool = False,
+    first_step: float = 0.03,
+    max_accel: float = 1.1,
 ) -> LogitQREMixedBehaviorFitResult:
-    res = libgbt._logit_behavior_estimate(data, local_max=local_max,
-                                          first_step=first_step, max_accel=max_accel)
-    return LogitQREMixedBehaviorFitResult(
-        data, "fixedpoint", res.lam, res.profile, res.log_like
+    res = libgbt._logit_behavior_estimate(
+        data, local_max=local_max, first_step=first_step, max_accel=max_accel
     )
+    return LogitQREMixedBehaviorFitResult(data, "fixedpoint", res.lam, res.profile, res.log_like)
 
 
 def _empirical_log_logit_probs(lam: float, regrets: list) -> list:
     """Given empirical choice regrets and a value of lambda (`lam`), compute the
     log-probabilities given by the logit choice model.
     """
-    log_sums = [
-        math.log(sum([math.exp(lam*r) for r in infoset]))
-        for infoset in regrets
-    ]
-    return [lam*a - s for (r, s) in zip(regrets, log_sums, strict=True) for a in r]
+    log_sums = [math.log(sum([math.exp(lam * r) for r in infoset])) for infoset in regrets]
+    return [lam * a - s for (r, s) in zip(regrets, log_sums, strict=True) for a in r]
 
 
 def _empirical_log_like(lam: float, regrets: list, flattened_data: list) -> float:
     """Given empirical choice regrets and a list of frequencies of choices, compute
     the log-likelihood of the choices given the regrets and assuming the logit
     choice model with lambda `lam`."""
-    return sum([f*p for (f, p) in zip(flattened_data, _empirical_log_logit_probs(lam, regrets),
-                                      strict=True)])
+    return sum(
+        [
+            f * p
+            for (f, p) in zip(
+                flattened_data, _empirical_log_logit_probs(lam, regrets), strict=True
+            )
+        ]
+    )
+
+
+def _fit_aic(log_like: float, n_parameters: int) -> float:
+    return 2.0 * n_parameters - 2.0 * log_like
+
+
+def _fit_bic(log_like: float, n_observations: float, n_parameters: int) -> float:
+    if n_observations <= 0.0:
+        return math.nan
+    return math.log(n_observations) * n_parameters - 2.0 * log_like
+
+
+def _sample_size_strategy(data: libgbt.MixedStrategyProfileDouble) -> float:
+    return float(sum(data[s] for p in data.game.players for s in p.strategies))
+
+
+def _sample_size_behavior(data: libgbt.MixedBehaviorProfileDouble) -> float:
+    return float(sum(data[a] for p in data.game.players for s in p.infosets for a in s.actions))
+
+
+def _estimate_lambda_standard_error(
+    lam: float, regrets: list, flattened_data: list
+) -> float | None:
+    step = max(1.0e-6, 1.0e-4 * max(1.0, abs(lam)))
+    ll0 = _empirical_log_like(lam, regrets, flattened_data)
+    llp = _empirical_log_like(lam + step, regrets, flattened_data)
+    llm = _empirical_log_like(max(0.0, lam - step), regrets, flattened_data)
+
+    second_derivative = (llp - 2.0 * ll0 + llm) / (step * step)
+    if second_derivative >= 0.0:
+        return None
+
+    variance = -1.0 / second_derivative
+    if variance <= 0.0 or not math.isfinite(variance):
+        return None
+
+    return math.sqrt(variance)
 
 
 def _estimate_strategy_empirical(
-        data: libgbt.MixedStrategyProfileDouble
+    data: libgbt.MixedStrategyProfileDouble,
 ) -> LogitQREMixedStrategyFitResult:
     flattened_data = [data[s] for p in data.game.players for s in p.strategies]
     normalized = data.normalize()
-    regrets = [[-normalized.strategy_regret(s) for s in player.strategies]
-               for player in data.game.players]
+    regrets = [
+        [-normalized.strategy_regret(s) for s in player.strategies] for player in data.game.players
+    ]
     res = scipy.optimize.minimize(
         lambda x: -_empirical_log_like(x[0], regrets, flattened_data),
         (0.1,),
-        bounds=((0.0, None),)
+        bounds=((0.0, None),),
     )
+    lam_hat = float(res.x[0])
+    se = _estimate_lambda_standard_error(lam_hat, regrets, flattened_data)
     profile = data.game.mixed_strategy_profile()
-    for strategy, log_prob in zip(data.game.strategies,
-                                  _empirical_log_logit_probs(res.x[0], regrets),
-                                  strict=True):
+    for strategy, log_prob in zip(
+        data.game.strategies, _empirical_log_logit_probs(lam_hat, regrets), strict=True
+    ):
         profile[strategy] = math.exp(log_prob)
-    return LogitQREMixedStrategyFitResult(
-        data, "empirical", res.x[0], profile, -res.fun
-    )
+    return LogitQREMixedStrategyFitResult(data, "empirical", lam_hat, profile, -res.fun, se=se)
 
 
 def _estimate_behavior_empirical(
-        data: libgbt.MixedBehaviorProfileDouble,
+    data: libgbt.MixedBehaviorProfileDouble,
 ) -> LogitQREMixedBehaviorFitResult:
     flattened_data = [data[a] for p in data.game.players for s in p.infosets for a in s.actions]
     normalized = data.normalize()
-    regrets = [[-normalized.action_regret(a) for a in infoset.actions]
-               for player in data.game.players for infoset in player.infosets]
+    regrets = [
+        [-normalized.action_regret(a) for a in infoset.actions]
+        for player in data.game.players
+        for infoset in player.infosets
+    ]
     res = scipy.optimize.minimize(
         lambda x: -_empirical_log_like(x[0], regrets, flattened_data),
         (0.1,),
-        bounds=((0.0, None),)
+        bounds=((0.0, None),),
     )
+    lam_hat = float(res.x[0])
+    se = _estimate_lambda_standard_error(lam_hat, regrets, flattened_data)
     profile = data.game.mixed_behavior_profile()
-    for action, log_prob in zip(data.game.actions, _empirical_log_logit_probs(res.x[0], regrets),
-                                strict=True):
+    for action, log_prob in zip(
+        data.game.actions, _empirical_log_logit_probs(lam_hat, regrets), strict=True
+    ):
         profile[action] = math.exp(log_prob)
-    return LogitQREMixedBehaviorFitResult(
-        data, "empirical", res.x[0], profile, -res.fun
-    )
+    return LogitQREMixedBehaviorFitResult(data, "empirical", lam_hat, profile, -res.fun, se=se)
 
 
 def logit_estimate(
-        data: libgbt.MixedStrategyProfile | libgbt.MixedBehaviorProfile,
-        use_empirical: bool = False,
-        local_max: bool = False,
-        first_step: float = .03,
-        max_accel: float = 1.1,
+    data: libgbt.MixedStrategyProfile | libgbt.MixedBehaviorProfile,
+    use_empirical: bool = False,
+    local_max: bool = False,
+    first_step: float = 0.03,
+    max_accel: float = 1.1,
 ) -> LogitQREMixedStrategyFitResult | LogitQREMixedBehaviorFitResult:
     """Use maximum likelihood estimation to find the logit quantal
     response equilibrium which best fits empirical frequencies of play.
@@ -320,13 +400,15 @@ def logit_estimate(
         if use_empirical:
             return _estimate_strategy_empirical(data)
         else:
-            return _estimate_strategy_fixedpoint(data, local_max=local_max,
-                                                 first_step=first_step, max_accel=max_accel)
+            return _estimate_strategy_fixedpoint(
+                data, local_max=local_max, first_step=first_step, max_accel=max_accel
+            )
     elif isinstance(data, libgbt.MixedBehaviorProfile):
         if use_empirical:
             return _estimate_behavior_empirical(data)
         else:
-            return _estimate_behavior_fixedpoint(data, local_max=local_max,
-                                                 first_step=first_step, max_accel=max_accel)
+            return _estimate_behavior_fixedpoint(
+                data, local_max=local_max, first_step=first_step, max_accel=max_accel
+            )
     else:
         raise TypeError("data must be specified as a MixedStrategyProfile or MixedBehaviorProfile")

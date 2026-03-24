@@ -2,6 +2,7 @@
 
 import dataclasses
 import functools
+import math
 import typing
 
 import pytest
@@ -2158,16 +2159,13 @@ ENUMPOLY_BEHAVIOR_CASES = [
     # 3-player perfect info game to test behavior two off equilibrium path
     pytest.param(
         EquilibriumTestCase(
-            factory=functools.partial(
-                games.read_from_file, "3_player_PI_2_dev_off_eq_path.efg"
-            ),
+            factory=functools.partial(games.read_from_file, "3_player_PI_2_dev_off_eq_path.efg"),
             solver=functools.partial(gbt.nash.enumpoly_solve, stop_after=None),
             expected=[
                 # candidate,10,10,1000,10000
                 [[d(1, 0)], [d(1, 0), d(1, 0, 0, 0)], [d(1, 0, 0, 0, 0)]],
                 # candidate,01,00,0000,00000
-                [[d(0, 1)], [d(1, 0), d(1, 0, 0, 0)],
-                 [d(1, 0, 0, 0, 0)]],
+                [[d(0, 1)], [d(1, 0), d(1, 0, 0, 0)], [d(1, 0, 0, 0, 0)]],
             ],
             regret_tol=TOL,
             prob_tol=TOL,
@@ -2177,9 +2175,7 @@ ENUMPOLY_BEHAVIOR_CASES = [
     ),
     pytest.param(
         EquilibriumTestCase(
-            factory=functools.partial(
-                games.read_from_file, "3_player_PI_2_dev_off_eq_path.efg"
-            ),
+            factory=functools.partial(games.read_from_file, "3_player_PI_2_dev_off_eq_path.efg"),
             solver=functools.partial(gbt.nash.enumpoly_solve, stop_after=None),
             expected=[
                 [[d(1, 0)], [d(1, 0), d(1, 0, 0, 0)], [d(1, 0, 0, 0, 0)]],
@@ -2678,3 +2674,21 @@ def test_logit_solve_lambda_error_with_invalid_max_accel():
         gbt.qre.logit_solve_lambda(game=game, lam=[1, 2, 3], max_accel=0)
     with pytest.raises(ValueError, match="at least 1.0"):
         gbt.qre.logit_solve_lambda(game=game, lam=[1, 2, 3], max_accel=0.1)
+
+
+def test_logit_estimate_empirical_has_fit_statistics_for_strategy_profile():
+    game = games.read_from_file("const_sum_game.nfg")
+    data = game.mixed_strategy_profile()
+    for player in game.players:
+        data[player.strategies[0]] = 60
+        data[player.strategies[1]] = 40
+
+    fit = gbt.qre.logit_estimate(data, use_empirical=True)
+
+    assert fit.se is None or fit.se > 0.0
+    assert math.isfinite(fit.aic)
+    assert math.isfinite(fit.bic)
+
+    n = sum(data[s] for p in game.players for s in p.strategies)
+    assert abs(fit.aic - (2.0 - 2.0 * fit.log_like)) < TOL
+    assert abs(fit.bic - (math.log(n) - 2.0 * fit.log_like)) < TOL
